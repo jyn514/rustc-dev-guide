@@ -8,6 +8,17 @@ on:
   schedule:
     # Run multiple times a day as the successful cached links are not checked every time.
     - cron: "0 */8 * * *"
+  # Temporary: exercise issue creation and recovery in a fork.
+  workflow_dispatch:
+    inputs:
+      result:
+        description: Simulated linkcheck result
+        required: true
+        default: fail
+        type: choice
+        options:
+          - fail
+          - pass
 
 jobs:
   ci:
@@ -114,9 +125,9 @@ jobs:
         id: report
         uses: drivendataorg/failed-build-issue-action@940568ce50eeef3f31a920614cefcc6102d2f930 # v1.3.0
         with:
-          # must be unique; the action uses this for deduplication.
-          label-name: C-broken-links
-          create-label: false
+          # Must be unique; the action uses this for deduplication.
+          label-name: scheduled-linkcheck-failure
+          label-description: The scheduled link check is failing
           title-template: "[automation] Dead links found"
           body-template: |
             The scheduled link check failed in [CI run #{{runNumber}}](${{ steps.failed-job.outputs.url }}).
@@ -129,6 +140,7 @@ jobs:
 
       - name: Add issue labels
         run: gh issue edit "${{ steps.report.outputs.issue-number }}" \
+            --add-label C-broken-links \
             --add-label C-CI \
             --add-label A-linkcheck
         env:
@@ -138,6 +150,78 @@ jobs:
     name: Close linkcheck issue if no links are broken
     needs: ci
     if: success() && github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@v7
+      - name: Close issue
+        run: ci/close-scheduled-linkcheck-issues.sh
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+  # Temporary: run this workflow with both "fail" and "pass" in a fork, then
+  # remove these three jobs and the workflow_dispatch trigger.
+  test-linkcheck:
+    name: Test linkcheck result
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Simulate selected result
+        env:
+          RESULT: ${{ inputs.result }}
+        run: test "$RESULT" = pass
+
+  test-notify-scheduled-failure:
+    name: Test opening an issue after failure
+    needs: test-linkcheck
+    if: failure() && github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      issues: write
+    steps:
+      - name: Determine which job failed
+        id: failed-job
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          url=$(gh api \
+            "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/jobs" \
+            --jq '.jobs[] | select(.name == "Test linkcheck result") | .html_url')
+          echo "url=$url" >> "$GITHUB_OUTPUT"
+
+      - name: Open an issue or comment on an existing one
+        id: report
+        uses: drivendataorg/failed-build-issue-action@940568ce50eeef3f31a920614cefcc6102d2f930 # v1.3.0
+        with:
+          label-name: scheduled-linkcheck-failure
+          label-description: The scheduled link check is failing
+          title-template: "[automation] Dead links found"
+          body-template: |
+            The scheduled link check failed in [CI run #{{runNumber}}](${{ steps.failed-job.outputs.url }}).
+
+            Commit: [{{sha}}]({{serverUrl}}/{{repo.owner}}/{{repo.repo}}/commit/{{sha}})
+
+            Please inspect the failed run for broken links or an automation error. Close this issue after the scheduled link check succeeds again.
+
+            <sup><i>Created by [drivendataorg/failed-build-issue-action](https://github.com/drivendataorg/failed-build-issue-action)</i></sup>
+
+      - name: Add issue labels
+        run: |
+          gh issue edit "${{ steps.report.outputs.issue-number }}" \
+            --repo "$GITHUB_REPOSITORY" \
+            --add-label C-broken-links \
+            --add-label C-CI \
+            --add-label A-linkcheck
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+  test-close-scheduled-failure:
+    name: Test closing the issue after success
+    needs: test-linkcheck
+    if: success() && github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     permissions:
       contents: read

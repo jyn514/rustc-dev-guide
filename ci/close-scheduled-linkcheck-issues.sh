@@ -8,9 +8,7 @@ set -euo pipefail
 issue_numbers=$(gh issue list \
   --repo "$GITHUB_REPOSITORY" \
   --state open \
-  --label C-broken-links \
-  --label C-CI \
-  --label A-linkcheck \
+  --label scheduled-linkcheck-failure \
   --limit 100 \
   --json number,title \
   --jq '.[] | select(.title == "[automation] Dead links found") | .number')
