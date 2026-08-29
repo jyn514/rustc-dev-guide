@@ -88,3 +88,63 @@ jobs:
         run: |
           # using split_inclusive that uses regex feature that uses an unstable feature
           RUSTC_BOOTSTRAP=1 cargo run --release --manifest-path ci/sembr/Cargo.toml src
+
+  notify-scheduled-failure:
+    name: Open an issue if links are broken
+    needs: ci
+    if: failure() && github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      issues: write
+    steps:
+      # github doesn't actually tell us the job >:( only the run id.
+      # fetch it from the REST API.
+      - name: Determine which job failed
+        id: failed-job
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          url=$(gh api \
+            "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/jobs" \
+            --jq '.jobs[] | select(.name == "ci") | .html_url')
+          echo "url=$url" >> "$GITHUB_OUTPUT"
+
+      - name: Open an issue or comment on an existing one
+        id: report
+        uses: drivendataorg/failed-build-issue-action@940568ce50eeef3f31a920614cefcc6102d2f930 # v1.3.0
+        with:
+          # must be unique; the action uses this for deduplication.
+          label-name: C-broken-links
+          create-label: false
+          title-template: "[automation] Dead links found"
+          body-template: |
+            The scheduled link check failed in [CI run #{{runNumber}}](${{ steps.failed-job.outputs.url }}).
+
+            Commit: [{{sha}}]({{serverUrl}}/{{repo.owner}}/{{repo.repo}}/commit/{{sha}})
+
+            Please inspect the failed run for broken links or an automation error. Close this issue after the scheduled link check succeeds again.
+
+            <sup><i>Created by [drivendataorg/failed-build-issue-action](https://github.com/drivendataorg/failed-build-issue-action)</i></sup>
+
+      - name: Add issue labels
+        run: gh issue edit "${{ steps.report.outputs.issue-number }}" \
+            --add-label C-CI \
+            --add-label A-linkcheck
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+  close-scheduled-failure:
+    name: Close linkcheck issue if no links are broken
+    needs: ci
+    if: success() && github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@v7
+      - name: Close issue
+        run: ci/close-scheduled-linkcheck-issues.sh
+        env:
+          GH_TOKEN: ${{ github.token }}
